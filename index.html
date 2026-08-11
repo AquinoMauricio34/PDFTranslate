@@ -90,6 +90,17 @@
   .toggle{ display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--ink-soft); }
   .toggle input{ accent-color:var(--accent); }
 
+  select{
+    font-family:var(--sans);
+    font-size:12.5px;
+    padding:6px 8px;
+    border-radius:var(--radius);
+    border:1px solid var(--line);
+    background:#fff;
+    color:var(--ink);
+  }
+  select:disabled{ opacity:.5; }
+
   #status{
     font-size:12px;
     color:var(--ink-soft);
@@ -244,11 +255,50 @@
   </div>
 
   <div class="field">
-    <label for="txtInput">Traducción (.txt)</label>
+    <label for="srcLangSelect">Original</label>
+    <select id="srcLangSelect">
+      <option value="auto">Detectar idioma</option>
+      <option value="en" selected>Inglés</option>
+      <option value="es">Español</option>
+      <option value="pt">Portugués</option>
+      <option value="fr">Francés</option>
+      <option value="de">Alemán</option>
+      <option value="it">Italiano</option>
+      <option value="nl">Neerlandés</option>
+      <option value="ru">Ruso</option>
+      <option value="zh-CN">Chino</option>
+      <option value="ja">Japonés</option>
+      <option value="ko">Coreano</option>
+      <option value="ar">Árabe</option>
+    </select>
+  </div>
+
+  <div class="field">
+    <label for="tgtLangSelect">Traducir a</label>
+    <select id="tgtLangSelect">
+      <option value="es" selected>Español</option>
+      <option value="en">Inglés</option>
+      <option value="pt">Portugués</option>
+      <option value="fr">Francés</option>
+      <option value="de">Alemán</option>
+      <option value="it">Italiano</option>
+      <option value="nl">Neerlandés</option>
+      <option value="ru">Ruso</option>
+      <option value="zh-CN">Chino</option>
+      <option value="ja">Japonés</option>
+      <option value="ko">Coreano</option>
+      <option value="ar">Árabe</option>
+    </select>
+  </div>
+
+  <button id="autoTranslateBtn" class="primary" disabled title="Traduce todo el PDF automáticamente, gratis y sin límite de palabras">Traducir PDF automáticamente (gratis)</button>
+
+  <div class="field">
+    <label for="txtInput">o traducción manual (.txt)</label>
     <input type="file" id="txtInput" accept=".txt" disabled />
   </div>
 
-  <button id="translateBtn" class="primary" disabled title="Alt+T">Traducir selección (Alt+T)</button>
+  <button id="translateBtn" disabled title="Alt+T">Ir a oración (Alt+T)</button>
   <button id="togglePanelBtn" disabled>Ocultar traducción</button>
 
   <label class="toggle">
@@ -262,7 +312,7 @@
 
 <main id="main">
   <div class="pane-wrap" id="pdfPaneWrap">
-    <div class="pane-head">Original (inglés)</div>
+    <div class="pane-head" id="pdfPaneHead">Original (inglés)</div>
     <div class="pane-scroll" id="pdfPane">
       <div class="page-placeholder" id="pdfEmptyNote">Todavía no cargaste un PDF.</div>
     </div>
@@ -271,7 +321,7 @@
   <div id="divider"></div>
 
   <div class="pane-wrap" id="textPaneWrap">
-    <div class="pane-head">Traducción (texto plano)</div>
+    <div class="pane-head" id="textPaneHead">Traducción (español)</div>
     <div class="pane-scroll" id="textPane">
       <div class="empty-note" id="textEmptyNote">Acá aparecerá la traducción, sincronizada por oración.</div>
     </div>
@@ -279,9 +329,10 @@
 </main>
 
 <footer class="hint">
-  <b>Cómo usarlo:</b> doble clic en una palabra del PDF, o seleccioná una frase y apretá <b>Alt+T</b> (o el botón), para saltar a la oración equivalente en el panel derecho.
-  El .txt de traducción debe tener <b>una oración por línea</b>, en el mismo orden que el PDF.
-  <span style="opacity:.75">(Nota: Ctrl+T no se usa porque los navegadores lo reservan para "nueva pestaña" y no se puede interceptar.)</span>
+  <b>Cómo usarlo:</b> cargá el PDF, elegí los idiomas y apretá <b>Traducir PDF automáticamente (gratis)</b>: traduce oración por oración, sin límite de palabras, y queda perfectamente sincronizado (nada de armar un .txt a mano).
+  Después, doble clic en una palabra del PDF, o seleccioná una frase y apretá <b>Alt+T</b> (o el botón), salta a la oración equivalente ya traducida.
+  Si preferís tu propia traducción, todavía podés cargar un <b>.txt</b> con una oración por línea, en el mismo orden que el PDF.
+  <span style="opacity:.75">La traducción automática usa un servicio público y gratuito de traducción (no oficial); si alguna oración falla, volvé a apretar el botón para reintentar solo esas. Ctrl+T no se usa porque los navegadores lo reservan para "nueva pestaña".</span>
 </footer>
 
 <div id="toast"></div>
@@ -302,6 +353,9 @@ const state = {
   syncScroll: false,
   isSyncingScroll: false,
   observer: null,
+  translating: false,
+  cancelTranslation: false,
+  lastTranslationLangs: null,
 };
 
 const el = (id) => document.getElementById(id);
@@ -317,6 +371,21 @@ const syncScrollChk = el("syncScrollChk");
 const mainEl = el("main");
 const divider = el("divider");
 const toastEl = el("toast");
+const srcLangSelect = el("srcLangSelect");
+const tgtLangSelect = el("tgtLangSelect");
+const autoTranslateBtn = el("autoTranslateBtn");
+const pdfPaneHead = el("pdfPaneHead");
+const textPaneHead = el("textPaneHead");
+
+function updatePaneHeaders(){
+  const srcLabel = srcLangSelect.selectedOptions[0].textContent;
+  const tgtLabel = tgtLangSelect.selectedOptions[0].textContent;
+  pdfPaneHead.textContent = srcLangSelect.value === "auto" ? "Original" : `Original (${srcLabel.toLowerCase()})`;
+  textPaneHead.textContent = `Traducción (${tgtLabel.toLowerCase()})`;
+}
+srcLangSelect.addEventListener("change", updatePaneHeaders);
+tgtLangSelect.addEventListener("change", updatePaneHeaders);
+updatePaneHeaders();
 
 function setStatus(msg){ statusEl.textContent = msg; }
 function showToast(msg){
@@ -435,6 +504,9 @@ function resetAll(){
   state.pages = [];
   state.allSentences = [];
   state.translatedSentences = [];
+  state.translating = false;
+  state.cancelTranslation = false;
+  state.lastTranslationLangs = null;
   if (state.observer) { state.observer.disconnect(); state.observer = null; }
   pdfPane.innerHTML = '<div class="page-placeholder">Cargando PDF…</div>';
   textPane.innerHTML = '<div class="empty-note">Acá aparecerá la traducción, sincronizada por oración.</div>';
@@ -443,6 +515,10 @@ function resetAll(){
   txtInput.value = "";
   translateBtn.disabled = true;
   togglePanelBtn.disabled = true;
+  autoTranslateBtn.disabled = true;
+  autoTranslateBtn.textContent = "Traducir PDF automáticamente (gratis)";
+  srcLangSelect.disabled = false;
+  tgtLangSelect.disabled = false;
 }
 
 /* ============================================================
@@ -486,7 +562,8 @@ pdfInput.addEventListener("change", async (e) => {
     translateBtn.disabled = false;
     togglePanelBtn.disabled = false;
     txtInput.disabled = false;
-    setStatus(`PDF cargado: ${pdf.numPages} páginas, ${state.allSentences.length} oraciones detectadas. Ahora cargá el .txt con la traducción.`);
+    autoTranslateBtn.disabled = false;
+    setStatus(`PDF cargado: ${pdf.numPages} páginas, ${state.allSentences.length} oraciones detectadas. Apretá "Traducir PDF automáticamente" o cargá un .txt.`);
   } catch (err) {
     console.error(err);
     setStatus("Error al leer el PDF. Revisá la consola para más detalles.");
@@ -628,6 +705,201 @@ function renderRightPane(){
 }
 
 /* ============================================================
+   AUTOMATIC TRANSLATION — free, no API key, no word limit
+   ------------------------------------------------------------
+   Translates every detected sentence directly (one request per
+   sentence), so the result is always perfectly aligned with the
+   PDF panel — no manual .txt file, no risk of the two getting
+   out of sync.
+
+   Primary: Google's public unauthenticated "gtx" endpoint
+   (translate.googleapis.com), the same one used internally by
+   Google Translate's Chrome extension — free and unlimited.
+   Fallback: MyMemory's free public API, used automatically if a
+   given sentence fails on the primary service.
+   ============================================================ */
+const translationCache = new Map(); // "src|tgt|text" -> translated text
+const TRANSLATE_CONCURRENCY = 6;
+const MAX_CHUNK_CHARS = 1400; // safety margin for URL length; longer sentences are split on word boundaries
+
+async function translateViaGoogle(text, sourceLang, targetLang){
+  const url = "https://translate.googleapis.com/translate_a/single"
+    + "?client=gtx&dt=t&sl=" + encodeURIComponent(sourceLang)
+    + "&tl=" + encodeURIComponent(targetLang)
+    + "&q=" + encodeURIComponent(text);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("Google HTTP " + res.status);
+  const data = await res.json();
+  if (!Array.isArray(data) || !Array.isArray(data[0])) throw new Error("Respuesta inesperada de Google");
+  return data[0].map(part => (part && part[0]) ? part[0] : "").join("");
+}
+
+async function translateViaMyMemory(text, sourceLang, targetLang){
+  const src = (sourceLang === "auto") ? "en" : sourceLang;
+  const url = "https://api.mymemory.translated.net/get?q=" + encodeURIComponent(text)
+    + "&langpair=" + encodeURIComponent(src) + "|" + encodeURIComponent(targetLang);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("MyMemory HTTP " + res.status);
+  const data = await res.json();
+  const translated = data && data.responseData && data.responseData.translatedText;
+  if (!translated) throw new Error("Respuesta inesperada de MyMemory");
+  return translated;
+}
+
+async function translateChunk(text, sourceLang, targetLang){
+  try {
+    return await translateViaGoogle(text, sourceLang, targetLang);
+  } catch (errGoogle) {
+    return await translateViaMyMemory(text, sourceLang, targetLang);
+  }
+}
+
+async function translateSentenceText(text, sourceLang, targetLang){
+  if (!text) return "";
+  const key = sourceLang + "|" + targetLang + "|" + text;
+  if (translationCache.has(key)) return translationCache.get(key);
+
+  let result;
+  if (text.length <= MAX_CHUNK_CHARS) {
+    result = await translateChunk(text, sourceLang, targetLang);
+  } else {
+    // Split very long sentences on word boundaries and stitch the
+    // translated pieces back together — no effective length limit.
+    const words = text.split(" ");
+    const chunks = [];
+    let cur = "";
+    for (const w of words) {
+      if ((cur + " " + w).trim().length > MAX_CHUNK_CHARS) { chunks.push(cur.trim()); cur = w; }
+      else { cur = cur ? cur + " " + w : w; }
+    }
+    if (cur) chunks.push(cur.trim());
+    const parts = [];
+    for (const c of chunks) parts.push(await translateChunk(c, sourceLang, targetLang));
+    result = parts.join(" ");
+  }
+  translationCache.set(key, result);
+  return result;
+}
+
+async function translateWithRetry(text, sourceLang, targetLang, attempts = 4){
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    if (state.cancelTranslation) throw new Error("cancelled");
+    try {
+      return await translateSentenceText(text, sourceLang, targetLang);
+    } catch (err) {
+      lastErr = err;
+      if (state.cancelTranslation) throw err;
+      await new Promise(r => setTimeout(r, 350 * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
+async function runTranslationQueue(indices, sourceLang, targetLang, onProgress){
+  let next = 0;
+  let failedCount = 0;
+  async function worker(){
+    while (next < indices.length) {
+      const pos = next++;
+      const i = indices[pos];
+      if (state.cancelTranslation) return;
+      const sentText = state.allSentences[i].text;
+      try {
+        state.translatedSentences[i] = await translateWithRetry(sentText, sourceLang, targetLang);
+      } catch (err) {
+        if (state.cancelTranslation) return;
+        state.translatedSentences[i] = "⚠️ (no se pudo traducir esta oración)";
+        failedCount++;
+      }
+      onProgress(pos + 1, indices.length);
+    }
+  }
+  const workers = [];
+  for (let w = 0; w < TRANSLATE_CONCURRENCY; w++) workers.push(worker());
+  await Promise.all(workers);
+  return failedCount;
+}
+
+async function translateAllSentences(){
+  if (!state.pdfDoc || !state.allSentences.length) return;
+
+  // Second click while running = cancel.
+  if (state.translating) {
+    state.cancelTranslation = true;
+    autoTranslateBtn.disabled = true;
+    autoTranslateBtn.textContent = "Cancelando…";
+    return;
+  }
+
+  const sourceLang = srcLangSelect.value;
+  const targetLang = tgtLangSelect.value;
+  const total = state.allSentences.length;
+  const langsKey = sourceLang + ">" + targetLang;
+
+  let indices;
+  if (state.translatedSentences.length === total && state.lastTranslationLangs === langsKey) {
+    // Resume: only (re)translate sentences that are still empty or failed.
+    indices = [];
+    for (let i = 0; i < total; i++) {
+      const cur = state.translatedSentences[i];
+      if (!cur || cur.startsWith("⚠️")) indices.push(i);
+    }
+    if (!indices.length) {
+      setBanner("ok", `Ya está todo traducido (${total} oraciones).`);
+      return;
+    }
+  } else {
+    state.translatedSentences = new Array(total).fill("");
+    indices = state.allSentences.map((_, i) => i);
+  }
+  state.lastTranslationLangs = langsKey;
+
+  state.translating = true;
+  state.cancelTranslation = false;
+  txtInput.disabled = true;
+  pdfInput.disabled = true;
+  srcLangSelect.disabled = true;
+  tgtLangSelect.disabled = true;
+  autoTranslateBtn.disabled = false;
+  autoTranslateBtn.textContent = "Cancelar traducción";
+  setBanner(null, "");
+  showPanel();
+  setStatus(`Traduciendo automáticamente… 0/${indices.length}`);
+
+  let failedCount = 0;
+  try {
+    failedCount = await runTranslationQueue(indices, sourceLang, targetLang, (done, tot) => {
+      setStatus(`Traduciendo automáticamente… ${done}/${tot}`);
+      if (done % 12 === 0 || done === tot) renderRightPane();
+    });
+  } finally {
+    state.translating = false;
+    txtInput.disabled = false;
+    pdfInput.disabled = false;
+    srcLangSelect.disabled = false;
+    tgtLangSelect.disabled = false;
+    autoTranslateBtn.disabled = false;
+    autoTranslateBtn.textContent = "Traducir PDF automáticamente (gratis)";
+  }
+
+  renderRightPane();
+
+  if (state.cancelTranslation) {
+    setBanner("warn", "Traducción cancelada. Apretá el botón de nuevo para continuar donde quedó.");
+    setStatus("Traducción cancelada.");
+  } else if (failedCount > 0) {
+    setBanner("warn", `Traducción completa con ${failedCount} oración(es) que no se pudieron traducir. Apretá el botón de nuevo para reintentar solo esas.`);
+    setStatus(`Traducción automática completa (${total} oraciones, ${failedCount} con error).`);
+  } else {
+    setBanner("ok", `Traducción automática completa: ${total} oraciones traducidas.`);
+    setStatus(`Traducción automática completa (${total} oraciones).`);
+  }
+}
+
+autoTranslateBtn.addEventListener("click", translateAllSentences);
+
+/* ============================================================
    LOAD TRANSLATION .TXT
    ============================================================ */
 txtInput.addEventListener("change", (e) => {
@@ -640,6 +912,7 @@ txtInput.addEventListener("change", (e) => {
       .map(l => l.trim())
       .filter(l => l.length > 0);
     state.translatedSentences = lines;
+    state.lastTranslationLangs = null;
     renderRightPane();
 
     const orig = state.allSentences.length;
