@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Lector sincronizado PDF ↔ Traducción</title>
+
+<!-- pdf.js (legacy build, works with plain <script> tags, no bundler needed) -->
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/legacy/build/pdf.min.js"></script>
+
+<style>
+  :root{
+    --paper:#eceae1;
+    --paper-raised:#f6f4ec;
+    --ink:#22262b;
+    --ink-soft:#5b6169;
+    --line:#d8d4c6;
+    --accent:#2f6f6b;
+    --accent-ink:#ffffff;
+    --highlight:#ffe066;
+    --highlight-soft:#fff3bf;
+    --warn-bg:#fbeecb;
+    --warn-ink:#7a4b00;
+    --ok-bg:#e4efe1;
+    --ok-ink:#2f5c2a;
+    --radius:6px;
+    --sans: ui-sans-serif, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --serif: Georgia, "Iowan Old Style", "Times New Roman", serif;
+  }
+
+  *{ box-sizing:border-box; }
+  html,body{ height:100%; margin:0; }
+  body{
+    font-family:var(--sans);
+    color:var(--ink);
+    background:var(--paper);
+    display:flex;
+    flex-direction:column;
+    overflow:hidden;
+  }
+
+  /* ---------- Toolbar ---------- */
+  header.toolbar{
+    background:var(--paper-raised);
+    border-bottom:1px solid var(--line);
+    padding:10px 16px;
+    display:flex;
+    flex-wrap:wrap;
+    align-items:center;
+    gap:10px 18px;
+    z-index:20;
+  }
+  header.toolbar h1{
+    font-size:14px;
+    font-weight:700;
+    letter-spacing:.02em;
+    text-transform:uppercase;
+    color:var(--ink-soft);
+    margin:0 12px 0 0;
+    white-space:nowrap;
+  }
+  .field{ display:flex; align-items:center; gap:6px; }
+  .field label{
+    font-size:12.5px; color:var(--ink-soft); white-space:nowrap;
+  }
+  input[type="file"]{
+    font-size:12.5px;
+    max-width:180px;
+  }
+  button, .btn{
+    font-family:var(--sans);
+    font-size:12.5px;
+    font-weight:600;
+    padding:7px 12px;
+    border-radius:var(--radius);
+    border:1px solid var(--line);
+    background:#fff;
+    color:var(--ink);
+    cursor:pointer;
+    white-space:nowrap;
+  }
+  button:hover{ border-color:var(--accent); color:var(--accent); }
+  button:disabled{ opacity:.45; cursor:not-allowed; }
+  button.primary{
+    background:var(--accent);
+    border-color:var(--accent);
+    color:var(--accent-ink);
+  }
+  button.primary:hover{ filter:brightness(1.08); color:var(--accent-ink); }
+  .toggle{ display:flex; align-items:center; gap:6px; font-size:12.5px; color:var(--ink-soft); }
+  .toggle input{ accent-color:var(--accent); }
+
+  #status{
+    font-size:12px;
+    color:var(--ink-soft);
+    margin-left:auto;
+    text-align:right;
+    max-width:360px;
+  }
+  #banner{
+    display:none;
+    font-size:12.5px;
+    padding:6px 16px;
+    border-bottom:1px solid var(--line);
+  }
+  #banner.warn{ display:block; background:var(--warn-bg); color:var(--warn-ink); }
+  #banner.ok{ display:block; background:var(--ok-bg); color:var(--ok-ink); }
+
+  /* ---------- Main split view ---------- */
+  main{
+    flex:1;
+    display:grid;
+    grid-template-columns: var(--left-width, 1fr) 6px 1fr;
+    min-height:0;
+  }
+  main.panel-hidden{ grid-template-columns: 1fr 0px 0px; }
+  main.panel-hidden #textPaneWrap{ display:none; }
+  main.panel-hidden #divider{ display:none; }
+
+  #divider{
+    cursor:col-resize;
+    background:var(--line);
+    position:relative;
+  }
+  #divider:hover, #divider.dragging{ background:var(--accent); }
+
+  .pane-wrap{ min-width:0; display:flex; flex-direction:column; min-height:0; }
+  .pane-head{
+    font-size:11px;
+    text-transform:uppercase;
+    letter-spacing:.06em;
+    color:var(--ink-soft);
+    padding:8px 16px;
+    border-bottom:1px solid var(--line);
+    background:var(--paper-raised);
+    flex:0 0 auto;
+  }
+  .pane-scroll{
+    flex:1;
+    overflow-y:auto;
+    padding:20px;
+  }
+
+  #pdfPane .page-container{
+    position:relative;
+    margin:0 auto 22px;
+    background:#fff;
+    box-shadow:0 1px 4px rgba(0,0,0,.15);
+  }
+  #pdfPane canvas{ display:block; }
+
+  /* Standard pdf.js text-layer overlay: invisible text over the canvas, selectable */
+  .textLayer{
+    position:absolute; left:0; top:0; right:0; bottom:0;
+    overflow:hidden; line-height:1;
+    opacity:1;
+  }
+  .textLayer span, .textLayer br{
+    color:transparent;
+    position:absolute;
+    white-space:pre;
+    cursor:text;
+    transform-origin:0% 0%;
+  }
+  .textLayer ::selection{ background:rgba(47,111,107,.35); }
+
+  .page-placeholder{
+    display:flex; align-items:center; justify-content:center;
+    color:var(--ink-soft); font-size:12px;
+  }
+
+  /* ---------- Right pane (plain translated text) ---------- */
+  #textPane .page-container{
+    max-width:760px;
+    margin:0 auto 30px;
+    padding-bottom:18px;
+    border-bottom:1px dashed var(--line);
+  }
+  #textPane .page-label{
+    font-size:11px;
+    color:var(--ink-soft);
+    margin-bottom:8px;
+    font-weight:600;
+  }
+  #textPane .page-body{
+    font-family:var(--serif);
+    font-size:16.5px;
+    line-height:1.75;
+    color:var(--ink);
+  }
+  #textPane .sentence{
+    border-radius:3px;
+    transition:background-color .35s ease;
+    padding:0 1px;
+  }
+  #textPane .sentence.pending{ color:#9a9d92; font-style:italic; }
+  #textPane .sentence.highlight{
+    background:var(--highlight);
+    box-shadow:0 0 0 2px var(--highlight);
+  }
+  #textPane .empty-note{
+    font-size:13px;
+    color:var(--ink-soft);
+    font-style:italic;
+  }
+
+  footer.hint{
+    flex:0 0 auto;
+    border-top:1px solid var(--line);
+    background:var(--paper-raised);
+    padding:6px 16px;
+    font-size:11.5px;
+    color:var(--ink-soft);
+  }
+  footer.hint b{ color:var(--ink); }
+
+  #toast{
+    position:fixed;
+    bottom:44px; left:50%; transform:translateX(-50%) translateY(10px);
+    background:var(--ink); color:#fff;
+    padding:9px 16px; border-radius:var(--radius);
+    font-size:12.5px;
+    opacity:0; pointer-events:none;
+    transition:opacity .2s ease, transform .2s ease;
+    z-index:50;
+  }
+  #toast.show{ opacity:.95; transform:translateX(-50%) translateY(0); }
+
+  @media (max-width:760px){
+    main{ grid-template-columns:1fr !important; grid-auto-rows:1fr; }
+    #divider{ display:none; }
+    main:not(.panel-hidden){ grid-template-rows:1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<header class="toolbar">
+  <h1>Lector sincronizado</h1>
+
+  <div class="field">
+    <label for="pdfInput">PDF</label>
+    <input type="file" id="pdfInput" accept="application/pdf" />
+  </div>
+
+  <div class="field">
+    <label for="txtInput">Traducción (.txt)</label>
+    <input type="file" id="txtInput" accept=".txt" disabled />
+  </div>
+
+  <button id="translateBtn" class="primary" disabled title="Alt+T">Traducir selección (Alt+T)</button>
+  <button id="togglePanelBtn" disabled>Ocultar traducción</button>
+
+  <label class="toggle">
+    <input type="checkbox" id="syncScrollChk" /> Scroll sincronizado
+  </label>
+
+  <div id="status">Cargá un PDF para empezar.</div>
+</header>
+
+<div id="banner"></div>
+
+<main id="main">
+  <div class="pane-wrap" id="pdfPaneWrap">
+    <div class="pane-head">Original (inglés)</div>
+    <div class="pane-scroll" id="pdfPane">
+      <div class="page-placeholder" id="pdfEmptyNote">Todavía no cargaste un PDF.</div>
+    </div>
+  </div>
+
+  <div id="divider"></div>
+
+  <div class="pane-wrap" id="textPaneWrap">
+    <div class="pane-head">Traducción (texto plano)</div>
+    <div class="pane-scroll" id="textPane">
+      <div class="empty-note" id="textEmptyNote">Acá aparecerá la traducción, sincronizada por oración.</div>
+    </div>
+  </div>
+</main>
+
+<footer class="hint">
+  <b>Cómo usarlo:</b> doble clic en una palabra del PDF, o seleccioná una frase y apretá <b>Alt+T</b> (o el botón), para saltar a la oración equivalente en el panel derecho.
+  El .txt de traducción debe tener <b>una oración por línea</b>, en el mismo orden que el PDF.
+  <span style="opacity:.75">(Nota: Ctrl+T no se usa porque los navegadores lo reservan para "nueva pestaña" y no se puede interceptar.)</span>
+</footer>
+
+<div id="toast"></div>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/legacy/build/pdf.worker.min.js";
+
+/* ============================================================
+   STATE
+   ============================================================ */
+const state = {
+  pdfDoc: null,
+  pages: [],            // per-page info: {textContent, pageText, sentences[], scale, vpBase, container}
+  allSentences: [],     // flattened, in reading order: {pageIndex, start, end, text, globalIndex}
+  translatedSentences: [],
+  panelVisible: true,
+  syncScroll: false,
+  isSyncingScroll: false,
+  observer: null,
+};
+
+const el = (id) => document.getElementById(id);
+const pdfInput = el("pdfInput");
+const txtInput = el("txtInput");
+const pdfPane = el("pdfPane");
+const textPane = el("textPane");
+const statusEl = el("status");
+const bannerEl = el("banner");
+const translateBtn = el("translateBtn");
+const togglePanelBtn = el("togglePanelBtn");
+const syncScrollChk = el("syncScrollChk");
+const mainEl = el("main");
+const divider = el("divider");
+const toastEl = el("toast");
+
+function setStatus(msg){ statusEl.textContent = msg; }
+function showToast(msg){
+  toastEl.textContent = msg;
+  toastEl.classList.add("show");
+  clearTimeout(showToast._t);
+  showToast._t = setTimeout(() => toastEl.classList.remove("show"), 2200);
+}
+function setBanner(kind, msg){
+  bannerEl.className = kind ? kind : "";
+  bannerEl.textContent = msg || "";
+}
+
+/* ============================================================
+   TEXT UTILITIES: sentence splitting + fuzzy locate
+   ============================================================ */
+const ABBR = ["Mr","Mrs","Ms","Dr","Prof","Sr","Sra","Srta","St","Jr","vs","etc",
+  "e.g","i.e","Fig","fig","No","pp","p","Eq","eq","Ch","ch","Sec","sec","Vol","vol",
+  "approx","cf","al","Ave","Inc","Ltd","Co","U.S","U.K","a.m","p.m"];
+
+function protectAbbreviations(text){
+  let out = text.replace(/(\d)\.(\d)/g, "$1\u0001$2"); // decimals
+  ABBR.forEach(a => {
+    const re = new RegExp("\\b" + a.replace(/\./g, "\\.") + "\\.", "g");
+    out = out.replace(re, a.replace(/\./g, "\u0001") + "\u0001");
+  });
+  return out; // same length as input, offsets preserved
+}
+
+function splitIntoSentences(pageText){
+  const protectedText = protectAbbreviations(pageText);
+  const boundaries = [];
+  const re = /[.!?]+/g;
+  let m;
+  while ((m = re.exec(protectedText))) {
+    const endIdx = m.index + m[0].length;
+    const restMatch = /^(["'”’)\]]*)(\s+)/.exec(protectedText.slice(endIdx));
+    if (restMatch) {
+      const closingLen = restMatch[1].length;
+      const afterWsIdx = endIdx + restMatch[0].length;
+      const nextChar = protectedText[afterWsIdx] || "";
+      if (/[A-ZÁÉÍÓÚÑ¡¿"'“(0-9]/.test(nextChar) || afterWsIdx >= protectedText.length) {
+        boundaries.push(endIdx + closingLen);
+      }
+    } else if (endIdx >= protectedText.length) {
+      boundaries.push(endIdx);
+    }
+  }
+  if (!boundaries.length || boundaries[boundaries.length - 1] < pageText.length) {
+    boundaries.push(pageText.length);
+  }
+
+  const sentences = [];
+  let start = 0;
+  for (const b of boundaries) {
+    const raw = pageText.slice(start, b);
+    const lead = raw.length - raw.trimStart().length;
+    const trail = raw.length - raw.trimEnd().length;
+    const s = start + lead, e = b - trail;
+    if (e > s) {
+      sentences.push({ start: s, end: e, text: pageText.slice(s, e).replace(/\s+/g, " ").trim() });
+    }
+    start = b;
+  }
+  return sentences;
+}
+
+function normalizeWithMap(str){
+  let norm = "";
+  const map = [];
+  let lastSpace = false;
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+    if (/\s/.test(c)) {
+      if (!lastSpace && norm.length) { norm += " "; map.push(i); }
+      lastSpace = true;
+    } else {
+      norm += c; map.push(i); lastSpace = false;
+    }
+  }
+  if (norm.endsWith(" ")) { norm = norm.slice(0, -1); map.pop(); }
+  return { norm, map };
+}
+
+function locateInPageText(pageText, needle){
+  const { norm: normPage, map } = normalizeWithMap(pageText);
+  const { norm: normNeedle } = normalizeWithMap(needle);
+  if (!normNeedle) return null;
+  let idx = normPage.indexOf(normNeedle);
+  if (idx === -1) idx = normPage.toLowerCase().indexOf(normNeedle.toLowerCase());
+  if (idx === -1) return null;
+  const startOrig = map[idx];
+  const endOrig = map[Math.min(idx + normNeedle.length - 1, map.length - 1)] + 1;
+  return [startOrig, endOrig];
+}
+
+/* ============================================================
+   PAGE TEXT EXTRACTION
+   ============================================================ */
+function buildPageText(textContent){
+  let text = "";
+  for (const item of textContent.items) {
+    const str = item.str || "";
+    text += str;
+    if (item.hasEOL) text += "\n";
+    else if (str.length && !/\s$/.test(str)) text += " ";
+  }
+  return text;
+}
+
+/* ============================================================
+   RESET
+   ============================================================ */
+function resetAll(){
+  state.pdfDoc = null;
+  state.pages = [];
+  state.allSentences = [];
+  state.translatedSentences = [];
+  if (state.observer) { state.observer.disconnect(); state.observer = null; }
+  pdfPane.innerHTML = '<div class="page-placeholder">Cargando PDF…</div>';
+  textPane.innerHTML = '<div class="empty-note">Acá aparecerá la traducción, sincronizada por oración.</div>';
+  setBanner(null, "");
+  txtInput.disabled = true;
+  txtInput.value = "";
+  translateBtn.disabled = true;
+  togglePanelBtn.disabled = true;
+}
+
+/* ============================================================
+   LOAD PDF
+   ============================================================ */
+pdfInput.addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  resetAll();
+  setStatus("Leyendo archivo…");
+  try {
+    const buf = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+    state.pdfDoc = pdf;
+    pdfPane.innerHTML = "";
+
+    const paneWidth = Math.max(pdfPane.clientWidth - 40, 300);
+
+    for (let i = 1; i <= pdf.numPages; i++) {
+      setStatus(`Extrayendo texto… ${i}/${pdf.numPages}`);
+      const page = await pdf.getPage(i);
+      const textContent = await page.getTextContent();
+      const vpBase = page.getViewport({ scale: 1 });
+      const scale = Math.min(Math.max(paneWidth / vpBase.width, 0.5), 2.5);
+
+      const pageText = buildPageText(textContent);
+      const sentences = splitIntoSentences(pageText);
+      sentences.forEach(s => {
+        s.pageIndex = i - 1;
+        s.globalIndex = state.allSentences.length;
+        state.allSentences.push(s);
+      });
+
+      state.pages.push({ page, textContent, pageText, sentences, scale, vpBase });
+    }
+
+    buildLeftPanePlaceholders();
+    renderRightPane();
+    setupLazyRendering();
+
+    translateBtn.disabled = false;
+    togglePanelBtn.disabled = false;
+    txtInput.disabled = false;
+    setStatus(`PDF cargado: ${pdf.numPages} páginas, ${state.allSentences.length} oraciones detectadas. Ahora cargá el .txt con la traducción.`);
+  } catch (err) {
+    console.error(err);
+    setStatus("Error al leer el PDF. Revisá la consola para más detalles.");
+  }
+});
+
+/* ============================================================
+   LEFT PANE: placeholders + lazy visual rendering
+   ============================================================ */
+function buildLeftPanePlaceholders(){
+  pdfPane.innerHTML = "";
+  state.pages.forEach((p, idx) => {
+    const w = Math.round(p.vpBase.width * p.scale);
+    const h = Math.round(p.vpBase.height * p.scale);
+    const container = document.createElement("div");
+    container.className = "page-container";
+    container.dataset.pane = "pdf";
+    container.dataset.page = String(idx);
+    container.style.width = w + "px";
+    container.style.height = h + "px";
+    container.innerHTML = `<div class="page-placeholder" style="position:absolute;inset:0;">Página ${idx + 1}</div>`;
+    pdfPane.appendChild(container);
+    p.container = container;
+  });
+}
+
+function setupLazyRendering(){
+  if (state.observer) state.observer.disconnect();
+  state.observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        const idx = parseInt(entry.target.dataset.page, 10);
+        renderPageVisual(idx);
+        state.observer.unobserve(entry.target);
+      }
+    });
+  }, { root: pdfPane, rootMargin: "600px 0px", threshold: 0.01 });
+
+  state.pages.forEach(p => state.observer.observe(p.container));
+}
+
+async function renderPageVisual(idx){
+  const p = state.pages[idx];
+  if (!p || p.rendered) return;
+  p.rendered = true;
+  try {
+    const viewport = p.page.getViewport({ scale: p.scale });
+    p.container.innerHTML = "";
+
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    const outputScale = window.devicePixelRatio || 1;
+    canvas.width = Math.floor(viewport.width * outputScale);
+    canvas.height = Math.floor(viewport.height * outputScale);
+    canvas.style.width = Math.floor(viewport.width) + "px";
+    canvas.style.height = Math.floor(viewport.height) + "px";
+    const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
+    p.container.appendChild(canvas);
+
+    await p.page.render({ canvasContext: ctx, viewport, transform }).promise;
+
+    const textLayerDiv = document.createElement("div");
+    textLayerDiv.className = "textLayer";
+    textLayerDiv.style.width = Math.floor(viewport.width) + "px";
+    textLayerDiv.style.height = Math.floor(viewport.height) + "px";
+    p.container.appendChild(textLayerDiv);
+
+    try {
+      const task = pdfjsLib.renderTextLayer({
+        textContent: p.textContent,
+        textContentSource: p.textContent,
+        container: textLayerDiv,
+        viewport,
+        textDivs: [],
+      });
+      if (task && task.promise) await task.promise;
+    } catch (tlErr) {
+      console.warn("No se pudo construir la capa de texto en la página", idx + 1, tlErr);
+    }
+  } catch (err) {
+    console.error("Error renderizando página", idx + 1, err);
+    p.container.innerHTML = '<div class="page-placeholder" style="position:absolute;inset:0;">Error al renderizar esta página</div>';
+  }
+}
+
+/* ============================================================
+   RIGHT PANE: plain translated text, synced by sentence index
+   ============================================================ */
+function renderRightPane(){
+  textPane.innerHTML = "";
+  const hasTranslation = state.translatedSentences.length > 0;
+
+  state.pages.forEach((p, pageIdx) => {
+    const container = document.createElement("div");
+    container.className = "page-container";
+    container.dataset.pane = "text";
+    container.dataset.page = String(pageIdx);
+
+    const label = document.createElement("div");
+    label.className = "page-label";
+    label.textContent = `Página ${pageIdx + 1}`;
+    container.appendChild(label);
+
+    const body = document.createElement("div");
+    body.className = "page-body";
+
+    if (!p.sentences.length) {
+      const note = document.createElement("span");
+      note.className = "sentence pending";
+      note.textContent = "(sin texto seleccionable en esta página)";
+      body.appendChild(note);
+    }
+
+    p.sentences.forEach(s => {
+      const span = document.createElement("span");
+      span.className = "sentence";
+      span.id = "sent-" + s.globalIndex;
+      if (hasTranslation) {
+        span.textContent = state.translatedSentences[s.globalIndex] ?? "—";
+      } else {
+        span.classList.add("pending");
+        span.textContent = "···";
+      }
+      body.appendChild(span);
+      body.appendChild(document.createTextNode(" "));
+
+      // paragraph break heuristic: two or more consecutive newlines after this sentence
+      const after = p.pageText.slice(s.end, s.end + 4);
+      if (/\n\s*\n/.test(after)) {
+        body.appendChild(document.createElement("br"));
+        body.appendChild(document.createElement("br"));
+      }
+    });
+
+    container.appendChild(body);
+    textPane.appendChild(container);
+    p.textContainer = container;
+  });
+}
+
+/* ============================================================
+   LOAD TRANSLATION .TXT
+   ============================================================ */
+txtInput.addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (!file || !state.pdfDoc) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    const lines = String(reader.result)
+      .split(/\r?\n/)
+      .map(l => l.trim())
+      .filter(l => l.length > 0);
+    state.translatedSentences = lines;
+    renderRightPane();
+
+    const orig = state.allSentences.length;
+    const trans = lines.length;
+    const diff = Math.abs(orig - trans);
+    if (orig > 0 && diff / orig > 0.15) {
+      setBanner("warn", `Atención: el PDF tiene ${orig} oraciones detectadas y el .txt tiene ${trans} líneas. Revisá que sea una oración por línea, en el mismo orden, o la sincronización quedará desalineada.`);
+    } else {
+      setBanner("ok", `Traducción cargada: ${trans} líneas para ${orig} oraciones detectadas.`);
+    }
+    showPanel();
+    setStatus(`Traducción cargada (${trans} líneas).`);
+  };
+  reader.readAsText(file, "utf-8");
+});
+
+/* ============================================================
+   TRANSLATE SELECTION (double-click / Alt+T / button)
+   ============================================================ */
+function handleTranslateSelection(){
+  if (!state.pdfDoc) return;
+  const sel = window.getSelection();
+  const text = sel && sel.toString().trim();
+  if (!text) { showToast("Seleccioná primero una palabra o frase en el PDF."); return; }
+
+  let node = sel.anchorNode;
+  if (!node) { showToast("No se pudo ubicar la selección."); return; }
+  const startEl = node.nodeType === 3 ? node.parentElement : node;
+  const pageEl = startEl && startEl.closest('.page-container[data-pane="pdf"]');
+  if (!pageEl) { showToast("Seleccioná texto dentro del documento PDF."); return; }
+
+  const pageIndex = parseInt(pageEl.dataset.page, 10);
+  const pageInfo = state.pages[pageIndex];
+  if (!pageInfo) return;
+
+  const match = locateInPageText(pageInfo.pageText, text);
+  if (!match) { showToast("No se encontró la oración correspondiente en esta página."); return; }
+
+  const [start, end] = match;
+  const overlapping = pageInfo.sentences.filter(s => s.end > start && s.start < end);
+  if (!overlapping.length) { showToast("No se encontró la oración correspondiente."); return; }
+
+  highlightSentences(overlapping.map(s => s.globalIndex));
+}
+
+function highlightSentences(globalIndices){
+  document.querySelectorAll("#textPane .sentence.highlight")
+    .forEach(elx => elx.classList.remove("highlight"));
+
+  let first = null;
+  globalIndices.forEach(gi => {
+    const target = document.getElementById("sent-" + gi);
+    if (target) {
+      target.classList.add("highlight");
+      if (!first) first = target;
+    }
+  });
+
+  if (first) {
+    showPanel();
+    first.scrollIntoView({ block: "center", behavior: "smooth" });
+  } else {
+    showToast("Esa parte de la página todavía no está sincronizada (sin traducción cargada para esa oración).");
+  }
+}
+
+pdfPane.addEventListener("dblclick", () => setTimeout(handleTranslateSelection, 0));
+translateBtn.addEventListener("click", handleTranslateSelection);
+document.addEventListener("keydown", (e) => {
+  const key = e.key ? e.key.toLowerCase() : "";
+  if ((e.ctrlKey || e.metaKey) && key === "t") {
+    // Best-effort only: most browsers reserve Ctrl+T for "new tab" and will not
+    // let a webpage intercept it. Alt+T below is the reliable shortcut.
+    try { e.preventDefault(); } catch (_) {}
+    handleTranslateSelection();
+  } else if (e.altKey && key === "t") {
+    e.preventDefault();
+    handleTranslateSelection();
+  }
+});
+
+/* ============================================================
+   SHOW / HIDE RIGHT PANEL
+   ============================================================ */
+function showPanel(){
+  state.panelVisible = true;
+  mainEl.classList.remove("panel-hidden");
+  togglePanelBtn.textContent = "Ocultar traducción";
+}
+function hidePanel(){
+  state.panelVisible = false;
+  mainEl.classList.add("panel-hidden");
+  togglePanelBtn.textContent = "Mostrar traducción";
+}
+togglePanelBtn.addEventListener("click", () => {
+  state.panelVisible ? hidePanel() : showPanel();
+});
+
+/* ============================================================
+   RESIZABLE DIVIDER
+   ============================================================ */
+(function initDivider(){
+  let dragging = false;
+  divider.addEventListener("mousedown", (e) => {
+    dragging = true;
+    divider.classList.add("dragging");
+    e.preventDefault();
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+    const rect = mainEl.getBoundingClientRect();
+    const px = Math.min(Math.max(e.clientX - rect.left, 240), rect.width - 240);
+    mainEl.style.setProperty("--left-width", px + "px");
+  });
+  window.addEventListener("mouseup", () => {
+    dragging = false;
+    divider.classList.remove("dragging");
+  });
+})();
+
+/* ============================================================
+   SYNCHRONIZED SCROLL
+   ============================================================ */
+syncScrollChk.addEventListener("change", () => {
+  state.syncScroll = syncScrollChk.checked;
+});
+
+function getTopVisiblePage(scroller){
+  const containers = scroller.querySelectorAll(".page-container");
+  const scrollerTop = scroller.getBoundingClientRect().top;
+  for (const c of containers) {
+    const r = c.getBoundingClientRect();
+    if (r.bottom > scrollerTop) {
+      const ratio = Math.min(Math.max((scrollerTop - r.top) / r.height, 0), 1);
+      return { idx: parseInt(c.dataset.page, 10), ratio, el: c };
+    }
+  }
+  return null;
+}
+
+function scrollToPageRatio(scroller, pageIdx, ratio){
+  const target = scroller.querySelector(`.page-container[data-page="${pageIdx}"]`);
+  if (!target) return;
+  const top = target.offsetTop + ratio * target.offsetHeight;
+  scroller.scrollTop = top;
+}
+
+function wireSyncScroll(sourceScroller, targetScroller){
+  sourceScroller.addEventListener("scroll", () => {
+    if (!state.syncScroll || state.isSyncingScroll) return;
+    const info = getTopVisiblePage(sourceScroller);
+    if (!info) return;
+    state.isSyncingScroll = true;
+    scrollToPageRatio(targetScroller, info.idx, info.ratio);
+    requestAnimationFrame(() => { state.isSyncingScroll = false; });
+  });
+}
+wireSyncScroll(pdfPane, textPane);
+wireSyncScroll(textPane, pdfPane);
+</script>
+</body>
+</html>
