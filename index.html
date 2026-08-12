@@ -26,6 +26,7 @@
     --radius:6px;
     --sans: ui-sans-serif, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     --serif: Georgia, "Iowan Old Style", "Times New Roman", serif;
+  --text-font-size:16.5px;
   }
 
   *{ box-sizing:border-box; }
@@ -152,6 +153,10 @@
     padding:20px;
   }
 
+  #textPane {
+    overflow-anchor:none;
+  }
+
   #pdfPane .page-container{
     position:relative;
     margin:0 auto 22px;
@@ -195,7 +200,7 @@
   }
   #textPane .page-body{
     font-family:var(--serif);
-    font-size:16.5px;
+    font-size:var(--text-font-size);
     line-height:1.75;
     color:var(--ink);
   }
@@ -294,12 +299,26 @@
   <button id="autoTranslateBtn" class="primary" disabled title="Traduce todo el PDF automáticamente, gratis y sin límite de palabras">Traducir PDF automáticamente (gratis)</button>
 
   <div class="field">
+    <label>Zoom PDF</label>
+    <button id="zoomOutBtn" title="Zoom out">−</button>
+    <button id="zoomInBtn" title="Zoom in">+</button>
+    <span id="zoomValue">100%</span>
+  </div>
+
+  <div class="field">
     <label for="txtInput">o traducción manual (.txt)</label>
     <input type="file" id="txtInput" accept=".txt" disabled />
+    <button id="downloadTranslationBtn" class="primary" disabled title="Descargar traducción">Descargar traducción</button>
   </div>
 
   <button id="translateBtn" disabled title="Alt+T">Ir a oración (Alt+T)</button>
   <button id="togglePanelBtn" disabled>Ocultar traducción</button>
+
+  <div class="field">
+    <label>Tamaño texto</label>
+    <button id="textSmallerBtn" title="Disminuir tamaño">A-</button>
+    <button id="textLargerBtn" title="Aumentar tamaño">A+</button>
+  </div>
 
   <label class="toggle">
     <input type="checkbox" id="syncScrollChk" /> Scroll sincronizado
@@ -346,9 +365,10 @@ pdfjsLib.GlobalWorkerOptions.workerSrc =
    ============================================================ */
 const state = {
   pdfDoc: null,
-  pages: [],            // per-page info: {textContent, pageText, sentences[], scale, vpBase, container}
+  pages: [],            // per-page info: {textContent, pageText, sentences[], baseScale, vpBase, container}
   allSentences: [],     // flattened, in reading order: {pageIndex, start, end, text, globalIndex}
   translatedSentences: [],
+  highlightedSentences: [],
   panelVisible: true,
   syncScroll: false,
   isSyncingScroll: false,
@@ -356,11 +376,14 @@ const state = {
   translating: false,
   cancelTranslation: false,
   lastTranslationLangs: null,
+  pdfZoom: 1,
+  textFontSize: 16.5,
 };
 
 const el = (id) => document.getElementById(id);
 const pdfInput = el("pdfInput");
 const txtInput = el("txtInput");
+const downloadTranslationBtn = el("downloadTranslationBtn");
 const pdfPane = el("pdfPane");
 const textPane = el("textPane");
 const statusEl = el("status");
@@ -374,6 +397,11 @@ const toastEl = el("toast");
 const srcLangSelect = el("srcLangSelect");
 const tgtLangSelect = el("tgtLangSelect");
 const autoTranslateBtn = el("autoTranslateBtn");
+const zoomOutBtn = el("zoomOutBtn");
+const zoomInBtn = el("zoomInBtn");
+const zoomValue = el("zoomValue");
+const textSmallerBtn = el("textSmallerBtn");
+const textLargerBtn = el("textLargerBtn");
 const pdfPaneHead = el("pdfPaneHead");
 const textPaneHead = el("textPaneHead");
 
@@ -383,6 +411,73 @@ function updatePaneHeaders(){
   pdfPaneHead.textContent = srcLangSelect.value === "auto" ? "Original" : `Original (${srcLabel.toLowerCase()})`;
   textPaneHead.textContent = `Traducción (${tgtLabel.toLowerCase()})`;
 }
+
+zoomOutBtn.addEventListener("click", () => setPdfZoom(state.pdfZoom - 0.1));
+zoomInBtn.addEventListener("click", () => setPdfZoom(state.pdfZoom + 0.1));
+textSmallerBtn.addEventListener("click", () => setTextFontSize(state.textFontSize - 1));
+textLargerBtn.addEventListener("click", () => setTextFontSize(state.textFontSize + 1));
+
+updateZoomDisplay();
+updateTextFontSize();
+
+function updateZoomDisplay(){
+  zoomValue.textContent = `${Math.round(state.pdfZoom * 100)}%`;
+}
+
+function updateTextFontSize(){
+  textPane.style.setProperty("--text-font-size", `${state.textFontSize}px`);
+}
+
+function setPdfZoom(newZoom){
+  state.pdfZoom = Math.min(3, Math.max(0.5, newZoom));
+  updateZoomDisplay();
+  if (state.pages.length) {
+    state.pages.forEach(p => { p.rendered = false; });
+    buildLeftPanePlaceholders();
+    setupLazyRendering();
+  }
+}
+
+function setTextFontSize(newSize){
+  state.textFontSize = Math.min(28, Math.max(12, newSize));
+  updateTextFontSize();
+}
+
+function downloadTextFile(filename, content){
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function getTranslatedTextFileContents(){
+  const total = state.allSentences.length;
+  if (!total || !state.translatedSentences.length) return null;
+  const lines = state.allSentences.map(s => {
+    const translation = state.translatedSentences[s.globalIndex];
+    return translation == null ? "" : translation;
+  });
+  return lines.join("\n");
+}
+
+function downloadTranslatedText(){
+  const content = getTranslatedTextFileContents();
+  if (!content) {
+    showToast("No hay traducción disponible para descargar.");
+    return;
+  }
+  const target = tgtLangSelect.value || "translation";
+  const filename = `translation-${target}.txt`;
+  downloadTextFile(filename, content);
+  setStatus(`Descarga completada: ${filename}`);
+}
+
+downloadTranslationBtn.addEventListener("click", downloadTranslatedText);
 srcLangSelect.addEventListener("change", updatePaneHeaders);
 tgtLangSelect.addEventListener("change", updatePaneHeaders);
 updatePaneHeaders();
@@ -507,6 +602,8 @@ function resetAll(){
   state.translating = false;
   state.cancelTranslation = false;
   state.lastTranslationLangs = null;
+  state.pdfZoom = 1;
+  state.textFontSize = 16.5;
   if (state.observer) { state.observer.disconnect(); state.observer = null; }
   pdfPane.innerHTML = '<div class="page-placeholder">Cargando PDF…</div>';
   textPane.innerHTML = '<div class="empty-note">Acá aparecerá la traducción, sincronizada por oración.</div>';
@@ -519,6 +616,9 @@ function resetAll(){
   autoTranslateBtn.textContent = "Traducir PDF automáticamente (gratis)";
   srcLangSelect.disabled = false;
   tgtLangSelect.disabled = false;
+  state.highlightedSentences = [];
+  updateZoomDisplay();
+  updateTextFontSize();
 }
 
 /* ============================================================
@@ -542,7 +642,7 @@ pdfInput.addEventListener("change", async (e) => {
       const page = await pdf.getPage(i);
       const textContent = await page.getTextContent();
       const vpBase = page.getViewport({ scale: 1 });
-      const scale = Math.min(Math.max(paneWidth / vpBase.width, 0.5), 2.5);
+      const baseScale = Math.min(Math.max(paneWidth / vpBase.width, 0.5), 2.5);
 
       const pageText = buildPageText(textContent);
       const sentences = splitIntoSentences(pageText);
@@ -552,7 +652,7 @@ pdfInput.addEventListener("change", async (e) => {
         state.allSentences.push(s);
       });
 
-      state.pages.push({ page, textContent, pageText, sentences, scale, vpBase });
+      state.pages.push({ page, textContent, pageText, sentences, baseScale, vpBase });
     }
 
     buildLeftPanePlaceholders();
@@ -576,8 +676,9 @@ pdfInput.addEventListener("change", async (e) => {
 function buildLeftPanePlaceholders(){
   pdfPane.innerHTML = "";
   state.pages.forEach((p, idx) => {
-    const w = Math.round(p.vpBase.width * p.scale);
-    const h = Math.round(p.vpBase.height * p.scale);
+    const scale = p.baseScale * state.pdfZoom;
+    const w = Math.round(p.vpBase.width * scale);
+    const h = Math.round(p.vpBase.height * scale);
     const container = document.createElement("div");
     container.className = "page-container";
     container.dataset.pane = "pdf";
@@ -610,8 +711,10 @@ async function renderPageVisual(idx){
   if (!p || p.rendered) return;
   p.rendered = true;
   try {
-    const viewport = p.page.getViewport({ scale: p.scale });
+    const scale = p.baseScale * state.pdfZoom;
+    const viewport = p.page.getViewport({ scale });
     p.container.innerHTML = "";
+    p.container.style.setProperty("--scale-factor", viewport.scale);
 
     const canvas = document.createElement("canvas");
     const ctx = canvas.getContext("2d");
@@ -653,8 +756,11 @@ async function renderPageVisual(idx){
    RIGHT PANE: plain translated text, synced by sentence index
    ============================================================ */
 function renderRightPane(){
+  const previousScrollTop = textPane.scrollTop;
+  const highlightedSet = new Set(state.highlightedSentences);
   textPane.innerHTML = "";
   const hasTranslation = state.translatedSentences.length > 0;
+  downloadTranslationBtn.disabled = !(state.allSentences.length && hasTranslation);
 
   state.pages.forEach((p, pageIdx) => {
     const container = document.createElement("div");
@@ -681,6 +787,9 @@ function renderRightPane(){
       const span = document.createElement("span");
       span.className = "sentence";
       span.id = "sent-" + s.globalIndex;
+      if (highlightedSet.has(s.globalIndex)) {
+        span.classList.add("highlight");
+      }
       if (hasTranslation) {
         span.textContent = state.translatedSentences[s.globalIndex] ?? "—";
       } else {
@@ -690,7 +799,6 @@ function renderRightPane(){
       body.appendChild(span);
       body.appendChild(document.createTextNode(" "));
 
-      // paragraph break heuristic: two or more consecutive newlines after this sentence
       const after = p.pageText.slice(s.end, s.end + 4);
       if (/\n\s*\n/.test(after)) {
         body.appendChild(document.createElement("br"));
@@ -702,6 +810,8 @@ function renderRightPane(){
     textPane.appendChild(container);
     p.textContainer = container;
   });
+
+  textPane.scrollTop = previousScrollTop;
 }
 
 /* ============================================================
@@ -779,6 +889,13 @@ async function translateSentenceText(text, sourceLang, targetLang){
   }
   translationCache.set(key, result);
   return result;
+}
+
+function formatDuration(seconds){
+  const total = Math.max(0, Math.round(seconds));
+  const minutes = Math.floor(total / 60);
+  const secs = total % 60;
+  return `${minutes}:${secs.toString().padStart(2, "0")}`;
 }
 
 async function translateWithRetry(text, sourceLang, targetLang, attempts = 4){
@@ -867,10 +984,14 @@ async function translateAllSentences(){
   showPanel();
   setStatus(`Traduciendo automáticamente… 0/${indices.length}`);
 
+  const startTime = Date.now();
   let failedCount = 0;
   try {
     failedCount = await runTranslationQueue(indices, sourceLang, targetLang, (done, tot) => {
-      setStatus(`Traduciendo automáticamente… ${done}/${tot}`);
+      const elapsedMs = Date.now() - startTime;
+      const remaining = done > 0 ? elapsedMs / done * (tot - done) / 1000 : 0;
+      const remainingText = done > 0 ? ` (${formatDuration(remaining)} restantes)` : "";
+      setStatus(`Traduciendo automáticamente… ${done}/${tot}${remainingText}`);
       if (done % 12 === 0 || done === tot) renderRightPane();
     });
   } finally {
@@ -909,8 +1030,7 @@ txtInput.addEventListener("change", (e) => {
   reader.onload = () => {
     const lines = String(reader.result)
       .split(/\r?\n/)
-      .map(l => l.trim())
-      .filter(l => l.length > 0);
+      .map(l => l.trimEnd());
     state.translatedSentences = lines;
     state.lastTranslationLangs = null;
     renderRightPane();
@@ -959,6 +1079,7 @@ function handleTranslateSelection(){
 }
 
 function highlightSentences(globalIndices){
+  state.highlightedSentences = globalIndices.slice();
   document.querySelectorAll("#textPane .sentence.highlight")
     .forEach(elx => elx.classList.remove("highlight"));
 
